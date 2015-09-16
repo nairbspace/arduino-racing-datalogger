@@ -3,13 +3,15 @@
 #include <SPI.h>
 #include <SD.h>
 
-//Debug Condition
-#if 1 // Need this statement or else rest of if else debug conditions won't work. Search Google for explanation.
-__asm volatile("nop");
+// Debug Condition
+#if 1 // Need this statement or else rest of if else debug conditions won't work for some reason. 
+__asm volatile("nop"); // Search Google for explanation.
 #endif
+
 
 #define DUEMILANOVE true // Set to true if using Duemilanove
 #define DEBUG false  // Set to true if want to debug
+
 #define DEBUG_Serial if(DEBUG)Serial // If DEBUG is set to true then all DEBUG_Serial statements will work
 #if DUEMILANOVE 
   #if DEBUG //If debugging on Duemilanove set GPS to 3,2 and use SoftwareSerial
@@ -43,7 +45,6 @@ __asm volatile("nop");
 
 // Initialize TinyGPS Variables
 TinyGPS gps;
-//float fmph;
 int year; 
 long lat, lon;
 byte month, day, hour, minute, second, hundredths, mph;
@@ -60,7 +61,7 @@ void setup() {
   // Intitialize input pins
   pinMode(BRAKE_PIN, INPUT);
   pinMode(TPS_PIN, INPUT);
-  pinMode(SD_SWITCH_PIN, INPUT_PULLUP);
+  pinMode(SD_SWITCH_PIN, INPUT_PULLUP); // SD Switch set to normally HIGH, will go to LOW when pressed
 
   // Initialize output pins
   pinMode(DEBUG_LED_PIN, OUTPUT);
@@ -73,16 +74,19 @@ void setup() {
   SD_Check();
 }
 
+// There might be delay with GPS_GET by 1.5 seconds because data shows that MPH is increasing
+// when TPS has already be let off. Need to test more and possibly find way to sync up
+// Or just do during post processing and shift data rows accordingly
 void loop() {
-  while(GPS_Serial.available()) {
-    if(digitalRead(SD_SWITCH_PIN) == LOW) { //If 
-      SD_Close();
-    }
-    if(gps.encode(GPS_Serial.read())) {
-      GPS_Get();
-      MOTO_Get();
-      SD_Write();     
-    }
+  if(digitalRead(SD_SWITCH_PIN) == LOW) { // If SD Button switch is pressed down
+    dataFile.close(); // Then save and close file
+    LED_FLASH(3); // And flash loop LED 3 times and halt
+  }
+
+  if(gps.encode(GPS_Serial.read())) { // If TinyGPS detects parsable data from serial port
+    MOTO_Get(); // Then read input data
+    GPS_Get(); // Get GPS Data
+    SD_Write(); // Write to SD Card
   }
 }
 
@@ -123,15 +127,18 @@ void SERIAL_Initialize() {
 
 void SD_Check() {
   DEBUG_Serial.print("Initializing SD card... ");
-  if(!SD.begin(SD_PIN)) {
+  if(!SD.begin(SD_PIN)) { // If SD SS Pin is false for whatever reason then
     DEBUG_Serial.println("Card failed, or not present.");
-    LED_FLASH(1);
+    LED_FLASH(1); // Flash loop LED once and halt
   }
   DEBUG_Serial.println("Card initialized.");
 
+  // After SD Card has been initialized, file will be created once GPS has a lock
+  // This is done by returning fileCreate boolean to true and will finally cause
+  // program to leave while loop
   boolean fileCreate = false;
   while(fileCreate == false) {
-    if(GPS_Serial.available() && gps.encode(GPS_Serial.read())) {
+    if(gps.encode(GPS_Serial.read())) {
       // Create a new file using character array. 
       // Must use '0' because if int i = 1, then i/10 = 0
       // and 0 + 0 = 'null' character
@@ -148,26 +155,31 @@ void SD_Check() {
           DEBUG_Serial.print(filename);
           DEBUG_Serial.println(" has been created.");
           fileCreate = true;
-          break;  // leave the loop!
+          break;  // leave the loop! This is done so only one file is created
+              // which is the first number that does not exist yet
         }
       }
     }
   }
-  if (!dataFile){
+  if (!dataFile){ // If for whatever reason file could not be created 
     DEBUG_Serial.println("could not create file.");
-    LED_FLASH(2);
+    LED_FLASH(2); // Flash loop led twice and halt
   }
+
+  // CSV File header
   String header = "MM/DD/YYYY,HH:MM:SS.CC,Latitude,Longitude,MPH,TPS,Brake";
   dataFile.println(header);
   DEBUG_Serial.println(header);   
 }
 
+// LED sequence will blink how ever many times variable "flash" is set to, then pause for 2 seconds
+// Then start blink sequence again indefinitely
 void LED_FLASH(byte flash) {
   // Number of times LED flashes
   // flash = 1, SD Card failed or not present
   // flash = 2, Could not create file
   // flash = 3, SD card closed able to remove
-  while(1)  {
+  while(1)  { // while(1) causes program to be stuck in loop forever
     for (byte i = flash; i > 0; i--) {
       digitalWrite(DEBUG_LED_PIN, LOW);
       delay(200);
@@ -182,32 +194,32 @@ void LED_FLASH(byte flash) {
 
 void GPS_Get()  {
 
-  digitalWrite(DEBUG_LED_PIN, LOW);
+  digitalWrite(DEBUG_LED_PIN, LOW); // Once GPS has a lock then it will turn off LED pin
 
+  // Read TinyGPS documentation on how to get necessary variables
   gps.crack_datetime(&year, &month, &day, &hour, &minute, &second, &hundredths);
   gps.get_position(&lat, &lon);
-  //fmph = gps.f_speed_mph();
   mph = byte(gps.f_speed_mph());
+
 }
 
 void MOTO_Get() {
-  tpsValue = analogRead(TPS_PIN);
-  tpsValue = map(tpsValue, 135, 793, 0 , 100);
+  // 0% Throttle reads approx 0.66 V = 135, 100% Throttle reads 3.87 V = 793
+  tpsValue = map(analogRead(TPS_PIN), 135, 793, 0 , 100); 
 
-  brakeValue = digitalRead(BRAKE_PIN);
-  brakeValue = map(brakeValue, 0, 1, 0, 100);
+  brakeValue = map(digitalRead(BRAKE_PIN), 0, 1, 0, 100);
 }
 
 void SD_Write(){
+  // Read up on sprintf for formatting array. 
+  // ld = long variable, d = int, byte
+  // 02 = must have two int on the left of decimal point
+  // So if month is January which is equal to 1, then it will store in array as 01
+  // This is done for formatting consistency 
   sprintf(dataArray, "%02d/%02d/%d,%02d:%02d:%02d.%02d,%ld,%ld,%d,%d,%d", 
           month, day, year, hour, minute, second, hundredths, 
           lat, lon, mph, tpsValue, brakeValue);
   dataFile.println(dataArray);
   DEBUG_Serial.println(dataArray);
-  dataFile.flush();
-}
-
-void SD_Close() {
-  dataFile.close();
-  LED_FLASH(3);
+  dataFile.flush(); // Save file, but doesn't close
 }
