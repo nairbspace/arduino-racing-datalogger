@@ -62,6 +62,8 @@ void setup() {
   setSerial(); // Initialize Serial ports
   setSdCard(); // Initialize SD Card
   createFile(); // Create File
+
+  digitalWrite(LED_STATUS_PIN, LOW); // Once setup is initalized it will turn off LED pin
 }
 
 // TODO: Need to test timing accuracy with GPS vs Sensor Data.
@@ -139,37 +141,19 @@ void setSdCard() {
 // After SD Card has been initialized, file will be created once GPS has a lock.
 // This is done by setting isFileCreated boolean to true and will finally cause
 // program to leave while loop.
-// TODO: Reduce control flow inception (ie. too many loops within loops) for sanity purposes.
 void createFile() { 
   boolean isFileCreated = false;
   while(!isFileCreated) {
     if(gps.encode(SERIAL_GPS.read())) {
-      // Create a new file using character array. 
-      // Must use '0' because if int i = 1 then i/10 = 0.1 
-      // but since its an integer, i/10 = 0 due to rounding cutoff
-      // and 0 + 0 = 'null' character
-      // but 0 + '0' = 0 + 48 = '0' character
-      // Reference ASCII chart for dec to char value
-      char filename[] = "LOGGER00.CSV"; // This creates array with 12 elements
-      for (byte i = 0; i < 100; i++) {
-        filename[6] = i/10 + '0'; // but 7th element is index 6
-        filename[7] = i%10 + '0';
-        if (!SD.exists(filename)) {
-          // only create a new file if it doesn't exist
-          dataFile = SD.open(filename, FILE_WRITE); 
-          SERIAL_DEBUG.print("File ");
-          SERIAL_DEBUG.print(filename);
-          SERIAL_DEBUG.println(" has been created.");
-          isFileCreated = true;
-          break;  // leave the for loop! This is done so only one file is created
-              // which is the first number that does not exist yet
-        }
-      }
+      String filename = getFileName();
+      dataFile = SD.open(filename, FILE_WRITE); 
+      SERIAL_DEBUG.println("File " + filename + " has been created.");
+      isFileCreated = true;
     }
   }
 
-  if (!dataFile){ // If for whatever reason file could not be created 
-    SERIAL_DEBUG.println("could not create file.");
+  if (!dataFile){ // If for whatever reason file could not be opened.
+    SERIAL_DEBUG.println("File could not be opened.");
     flashLed(2); // Flash loop led twice and halt
   }
 
@@ -179,6 +163,25 @@ void createFile() {
   SERIAL_DEBUG.println(header);
 }
 
+// Create a new file using character array. 
+// Must use '0' because if int i = 1 then i/10 = 0.1 
+// but since its an integer, i/10 = 0 due to rounding cutoff
+// and 0 + 0 = 'null' character
+// but 0 + '0' = 0 + 48 = '0' character
+// Reference ASCII chart for dec to char value
+String getFileName() {
+  char filename[] = "LOGGER00.CSV";
+  for (byte i = 0; i < 100; i++) {
+    filename[6] = i/10 + '0'; // but 7th element is index 6
+      filename[7] = i%10 + '0';
+      if(!SD.exists(filename)) { 
+          // only return filename if it doesn't exist in SD card yet
+        return filename;
+      }
+  }
+}
+
+// TODO: SWITCH TO INTERRUPT PIN!!
 void checkStopSwitchPin() {
   if(digitalRead(STOP_SWITCH_PIN) == LOW) { // If Stop pushbutton switch is pressed down then
     dataFile.close(); // Save and close file
@@ -190,7 +193,7 @@ void checkStopSwitchPin() {
 // pause for 2 seconds, then start blink sequence over again indefinitely.
 // Number of times LED flashes:
   // 1 = SD Card failed or not present
-  // 2 = Could not create file
+  // 2 = File could not be opened
   // 3 = SD card closed able to remove
 void flashLed(byte flash) {
   while(1)  { // while(1) causes program to be stuck in loop forever
@@ -207,13 +210,10 @@ void flashLed(byte flash) {
 }
 
 void setGpsData() {
-  digitalWrite(LED_STATUS_PIN, LOW); // Once GPS has a lock then it will turn off LED pin
-
   // Read TinyGPS documentation on how to get necessary variables
   gps.crack_datetime(&year, &month, &day, &hour, &minute, &second, &hundredths);
   gps.get_position(&lat, &lon);
   mph = byte(gps.f_speed_mph());
-
 }
 
 void getSensorData() {
@@ -233,5 +233,9 @@ void writeToSdCard(){
           lat, lon, mph, tpsValue, brakeValue);
   dataFile.println(dataArray);
   SERIAL_DEBUG.println(dataArray);
-  dataFile.flush(); // Save file, but doesn't close
+  dataFile.flush(); // Save file, but doesn't close.
+  // TODO: Offload file saving possibly to RPi which can utilize SQL database.
+  // This is because constantly saving after each array overtime the
+  // file will become bigger and bigger and will take longer and longer to 
+  // save which will hold up the main thread from working.
 }
